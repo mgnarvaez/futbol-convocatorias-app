@@ -1,10 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { App } from '../App'
+import { AdminPanel } from '../components/Dashboard/AdminPanel'
 
 export const Route = createFileRoute('/')({
-  component: IndexComponent,
+  component: () => <AdminPanel />,
 })
-
-function IndexComponent() {
-  return <App />
-}
