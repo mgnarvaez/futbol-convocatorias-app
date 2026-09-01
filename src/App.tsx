@@ -1,10 +1,11 @@
 import React, { useEffect } from 'react';
-import { useAppStore } from './stores/appStore';
+import { useAppStore } from './lib/store'; // Cambiado a src/lib/store.ts de Lovable
 import { AdminPanel } from './components/Dashboard/AdminPanel';
 import { InscripcionForm } from './components/Convocatorias/InscripcionForm';
+import { EquiposView } from './components/Equipos/EquiposView'; // Incluimos la vista de equipos
 import clsx from 'clsx';
 
-type AppView = 'admin' | 'inscripcion';
+type AppView = 'admin' | 'inscripcion' | 'equipos';
 
 export const App: React.FC = () => {
   const { darkMode, cargarJugadores } = useAppStore();
@@ -14,7 +15,6 @@ export const App: React.FC = () => {
     cargarJugadores();
   }, [cargarJugadores]);
 
-  // Aplicar dark mode al root
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark');
@@ -25,49 +25,43 @@ export const App: React.FC = () => {
 
   return (
     <div className={clsx(
-      'transition-colors duration-300',
-      darkMode ? 'dark bg-gray-900' : 'bg-white'
+      'min-h-screen transition-colors duration-300',
+      darkMode ? 'dark bg-gray-900 text-white' : 'bg-white text-gray-900'
     )}>
-      {/* Navegación */}
-      {currentView === 'admin' && (
-        <div className={clsx(
-          'fixed bottom-8 right-8 z-50',
-          'flex gap-3'
-        )}>
-          <button
-            onClick={() => setCurrentView('inscripcion')}
-            className={clsx(
-              'px-6 py-3 rounded-lg font-bold transition-all shadow-lg',
-              'bg-futbol-blue hover:bg-blue-600 text-white',
-              'flex items-center gap-2'
-            )}
-          >
-            📝 Ir a Inscripción
-          </button>
-        </div>
-      )}
-
-      {currentView === 'inscripcion' && (
-        <div className={clsx(
-          'fixed bottom-8 right-8 z-50',
-          'flex gap-3'
-        )}>
+      {/* Botones de Navegación Flotantes */}
+      <div className="fixed bottom-8 right-8 z-50 flex gap-3">
+        {currentView !== 'admin' && (
           <button
             onClick={() => setCurrentView('admin')}
-            className={clsx(
-              'px-6 py-3 rounded-lg font-bold transition-all shadow-lg',
-              'bg-futbol-green hover:bg-green-600 text-white',
-              'flex items-center gap-2'
-            )}
+            className="px-5 py-3 rounded-lg font-bold bg-gray-800 hover:bg-gray-700 text-white shadow-lg flex items-center gap-2"
           >
             🎛️ Panel Admin
           </button>
-        </div>
-      )}
+        )}
+        {currentView !== 'inscripcion' && (
+          <button
+            onClick={() => setCurrentView('inscripcion')}
+            className="px-5 py-3 rounded-lg font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-lg flex items-center gap-2"
+          >
+            📝 Inscripción
+          </button>
+        )}
+        {currentView !== 'equipos' && (
+          <button
+            onClick={() => setCurrentView('equipos')}
+            className="px-5 py-3 rounded-lg font-bold bg-green-600 hover:bg-green-700 text-white shadow-lg flex items-center gap-2"
+          >
+            ⚽ Equipos
+          </button>
+        )}
+      </div>
 
-      {/* Contenido */}
-      {currentView === 'admin' && <AdminPanel />}
-      {currentView === 'inscripcion' && <InscripcionForm />}
+      {/* Renders de Vistas */}
+      <main className="p-4">
+        {currentView === 'admin' && <AdminPanel />}
+        {currentView === 'inscripcion' && <InscripcionForm />}
+        {currentView === 'equipos' && <EquiposView />}
+      </main>
     </div>
   );
 };
