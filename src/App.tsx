@@ -1,6 +1,5 @@
 import React, { useEffect } from 'react';
-import { useAppStore } from './lib/store'; // Cambiado a src/lib/store.ts de Lovable
-import { AdminPanel } from './components/Dashboard/AdminPanel';
+import { useAppStore } from './stores/appStore';import { AdminPanel } from './components/Dashboard/AdminPanel';
 import { InscripcionForm } from './components/Convocatorias/InscripcionForm';
 import { EquiposView } from './components/Equipos/EquiposView'; // Incluimos la vista de equipos
 import clsx from 'clsx';
