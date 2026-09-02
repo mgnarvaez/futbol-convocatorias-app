@@ -1,194 +1,289 @@
-import { supabase } from './supabaseClient';
-import { Inscripcion, EquipoAsignado, Sede } from '../types';
+import { Jugador } from './sheetsService';
 
-interface ResultadoArmado {
-  equipos: Map<Sede, { titulares: EquipoAsignado[]; suplentes: EquipoAsignado[] }>;
-  noAsignados: Inscripcion[];
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxrnsy5Nnc3NhuaiMDQttchV96qtNqVuS8DVP8gZePhdt8FJ0V5AD9aAO-MSVIPkGVT/exec';
+
+export interface EquipoArmado {
+  sede: string;
+  titulares: Jugador[];
+  suplentes: Jugador[];
+  suspended: boolean;
+  capacidad: number;
 }
 
-export const armadorService = {
-  // Función principal: Armar equipos automáticamente
-  async armarEquipos(convocatoriaId: string): Promise<ResultadoArmado> {
-    // 1. Obtener inscripciones
-    const { data: inscripciones, error: errInsc } = await supabase
-      .from('inscripciones')
-      .select(`
-        *,
-        jugador:jugadores(*)
-      `)
-      .eq('convocatoria_id', convocatoriaId)
-      .order('timestamp_inscripcion', { ascending: true });
+export interface ResultadoArmado {
+  exitoso: boolean;
+  mensaje: string;
+  equipos: EquipoArmado[];
+  timestamp: string;
+}
 
-    if (errInsc) throw errInsc;
-
-    // 2. Obtener configuración
-    const { data: config, error: errConfig } = await supabase
-      .from('configuracion_panel')
-      .select('*')
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .single();
-
-    if (errConfig) throw errConfig;
-
-    // 3. Capacidades de sedes
-    const capacidades: Record<Sede, number> = {
-      'CANTON': 14,
-      'SM': 16,
-      'PUERTOS': config?.puertos_10vs10 ? 20 : 14
+/**
+ * Ejecuta el armado de equipos con la configuración actual
+ */
+export async function armarEquipos(config: {
+  lluvia: string;
+  suspension1: string;
+  suspension2: string;
+  puertos_10vs10: boolean;
+  bajas: Array<{ nombre: string; motivo: string }>;
+}): Promise<ResultadoArmado> {
+  try {
+    const payload = {
+      action: 'select_players',
+      params: {
+        suspensionLluvia: config.lluvia || 'SOL',
+        suspensionOtra: config.suspension1 || 'NINGUNA',
+        suspensionOtra2: config.suspension2 || 'NINGUNA',
+        puertos10vs10: config.puertos_10vs10 || false,
+        bajas: config.bajas || [],
+      },
     };
 
-    // 4. Filtrar por lluvia y suspensiones
-    let jugadoresValidos = (inscripciones || []).filter((insc: any) => {
-      if (config?.suspension_lluvia && !insc.juega_con_lluvia) return false;
-      if (config?.sedes_canceladas?.includes(insc.sede_preferida)) return false;
-      return true;
+    const response = await fetch(SCRIPT_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
     });
 
-    // 5. Ordenar por prioridad (tu algoritmo original)
-    jugadoresValidos.sort((a: any, b: any) => {
-      const jugadorA = a.jugador;
-      const jugadorB = b.jugador;
-
-      // VIP primero
-      if (jugadorA.es_vip !== jugadorB.es_vip) {
-        return jugadorA.es_vip ? -1 : 1;
-      }
-
-      // Pago al día
-      if (jugadorA.estado_pago !== jugadorB.estado_pago) {
-        return jugadorA.estado_pago === 'AL_DÍA' ? -1 : 1;
-      }
-
-      // Por antigüedad (timestamp)
-      return new Date(a.timestamp_inscripcion).getTime() - 
-             new Date(b.timestamp_inscripcion).getTime();
-    });
-
-    // 6. Asignar equipos
-    const sedes: Record<Sede, any> = {
-      'CANTON': { titulares: [], suplentes: [] },
-      'SM': { titulares: [], suplentes: [] },
-      'PUERTOS': { titulares: [], suplentes: [] }
-    };
-
-    const noAsignados: Inscripcion[] = [];
-    let ordenConvocatoria = 1;
-
-    for (const inscripcion of jugadoresValidos) {
-      const sedePref = inscripcion.sede_preferida as Sede;
-      let asignado = false;
-
-      // Intentar asignar a sede preferida
-      if (sedes[sedePref].titulares.length < capacidades[sedePref]) {
-        sedes[sedePref].titulares.push(inscripcion);
-        asignado = true;
-      }
-      // Si es flexible, buscar otra sede
-      else if (inscripcion.flexible) {
-        for (const sede of ['CANTON', 'SM', 'PUERTOS'] as Sede[]) {
-          if (sedes[sede].titulares.length < capacidades[sede]) {
-            sedes[sede].titulares.push(inscripcion);
-            asignado = true;
-            break;
-          }
-        }
-      }
-
-      // Si no asignó como titular, va a suplentes
-      if (!asignado) {
-        const sedeParaSuplente = inscripcion.flexible
-          ? Object.keys(sedes)[0] as Sede
-          : sedePref;
-        sedes[sedeParaSuplente].suplentes.push(inscripcion);
-      }
-
-      if (!asignado && !inscripcion.flexible) {
-        noAsignados.push(inscripcion);
-      }
+    if (!response.ok) {
+      throw new Error(`Error HTTP: ${response.status}`);
     }
 
-    // 7. Guardar en BD
-    const equiposGuardados: Map<Sede, { titulares: EquipoAsignado[]; suplentes: EquipoAsignado[] }> = new Map();
+    const data = await response.json();
 
-    for (const [sede, grupo] of Object.entries(sedes)) {
-      const titularesGuardados: EquipoAsignado[] = [];
-      const suplentesGuardados: EquipoAsignado[] = [];
+    if (!data.success) {
+      throw new Error(data.error || 'Error al armar equipos');
+    }
 
-      // Guardar titulares
-      for (const insc of grupo.titulares) {
-        const { data, error } = await supabase
-          .from('equipos_asignados')
-          .insert([
-            {
-              convocatoria_id: convocatoriaId,
-              sede_id: sede,
-              jugador_id: insc.jugador_id,
-              tipo_asignacion: 'TITULAR',
-              orden_convocatoria: ordenConvocatoria++
+    // Procesar respuesta
+    const equipos: EquipoArmado[] = [];
+
+    if (data.solapas) {
+      const sedesMap = {
+        SM: { nom: 'SM', cap: 16 },
+        canton: { nom: 'CANTON', cap: 14 },
+        puertos: { nom: 'PUERTOS', cap: config.puertos_10vs10 ? 20 : 14 },
+      };
+
+      Object.entries(sedesMap).forEach(([key, info]) => {
+        const sedData = data.solapas[key as keyof typeof data.solapas];
+        if (sedData) {
+          const titulares: Jugador[] = [];
+          const suplentes: Jugador[] = [];
+
+          sedData.players?.forEach((p: any) => {
+            const jug: Jugador = {
+              nombre: p.apodo || '',
+              email: p.email || '',
+              tipo: p.tipo || 'GENERAL',
+              sede_pref: info.nom,
+              flexible: p.flexible || false,
+              juega_lluvia: p.playIfRains || false,
+            };
+
+            if (p.estado?.includes('SUPLENTE')) {
+              suplentes.push(jug);
+            } else {
+              titulares.push(jug);
             }
-          ])
-          .select()
-          .single();
+          });
 
-        if (!error) titularesGuardados.push(data);
-      }
-
-      // Guardar suplentes
-      for (const insc of grupo.suplentes) {
-        const { data, error } = await supabase
-          .from('equipos_asignados')
-          .insert([
-            {
-              convocatoria_id: convocatoriaId,
-              sede_id: sede,
-              jugador_id: insc.jugador_id,
-              tipo_asignacion: 'SUPLENTE',
-              orden_convocatoria: ordenConvocatoria++
-            }
-          ])
-          .select()
-          .single();
-
-        if (!error) suplentesGuardados.push(data);
-      }
-
-      equiposGuardados.set(sede as Sede, {
-        titulares: titularesGuardados,
-        suplentes: suplentesGuardados
+          equipos.push({
+            sede: info.nom,
+            titulares,
+            suplentes,
+            suspended: sedData.isSuspended || false,
+            capacidad: info.cap,
+          });
+        }
       });
     }
 
     return {
-      equipos: equiposGuardados,
-      noAsignados
+      exitoso: true,
+      mensaje: '✅ Equipos armados exitosamente',
+      equipos,
+      timestamp: new Date().toLocaleTimeString('es-AR'),
     };
-  },
+  } catch (error) {
+    console.error('Error armando equipos:', error);
+    return {
+      exitoso: false,
+      mensaje: error instanceof Error ? error.message : 'Error desconocido',
+      equipos: [],
+      timestamp: new Date().toLocaleTimeString('es-AR'),
+    };
+  }
+}
 
-  // Obtener equipos armados
-  async obtenerEquipos(convocatoriaId: string): Promise<Map<Sede, { titulares: EquipoAsignado[]; suplentes: EquipoAsignado[] }>> {
-    const { data, error } = await supabase
-      .from('equipos_asignados')
-      .select(`
-        *,
-        jugador:jugadores(*)
-      `)
-      .eq('convocatoria_id', convocatoriaId)
-      .order('sede_id', { ascending: true })
-      .order('tipo_asignacion', { ascending: true })
-      .order('orden_convocatoria', { ascending: true });
+/**
+ * Registra las asistencias de los jugadores convocados
+ */
+export async function registrarAsistencias(): Promise<{
+  exitoso: boolean;
+  mensaje: string;
+}> {
+  try {
+    const payload = {
+      action: 'guardar_asistencias',
+      params: {},
+    };
 
-    if (error) throw error;
+    const response = await fetch(SCRIPT_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
 
-    const equipos: Map<Sede, { titulares: EquipoAsignado[]; suplentes: EquipoAsignado[] }> = new Map();
+    const data = await response.json();
 
-    for (const sede of ['CANTON', 'SM', 'PUERTOS'] as Sede[]) {
-      equipos.set(sede, {
-        titulares: (data || []).filter((e: any) => e.sede_id === sede && e.tipo_asignacion === 'TITULAR'),
-        suplentes: (data || []).filter((e: any) => e.sede_id === sede && e.tipo_asignacion === 'SUPLENTE')
-      });
+    if (data.success) {
+      return {
+        exitoso: true,
+        mensaje: '✅ Asistencias guardadas correctamente',
+      };
+    } else {
+      throw new Error(data.error || 'Error guardando asistencias');
+    }
+  } catch (error) {
+    console.error('Error registrando asistencias:', error);
+    return {
+      exitoso: false,
+      mensaje: error instanceof Error ? error.message : 'Error desconocido',
+    };
+  }
+}
+
+/**
+ * Actualiza el desplegable de bajas con los jugadores inscriptos
+ */
+export async function actualizarDesplegableBajas(): Promise<{
+  exitoso: boolean;
+  mensaje: string;
+}> {
+  try {
+    const payload = {
+      action: 'actualizar_bajas',
+      params: {},
+    };
+
+    const response = await fetch(SCRIPT_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      return {
+        exitoso: true,
+        mensaje: '✅ Desplegable de bajas actualizado',
+      };
+    } else {
+      throw new Error(data.error || 'Error actualizando bajas');
+    }
+  } catch (error) {
+    console.error('Error actualizando bajas:', error);
+    return {
+      exitoso: false,
+      mensaje: error instanceof Error ? error.message : 'Error desconocido',
+    };
+  }
+}
+
+/**
+ * Limpia todos los datos del sistema (formularios, bajas, etc)
+ */
+export async function limpiarSistema(): Promise<{
+  exitoso: boolean;
+  mensaje: string;
+}> {
+  try {
+    if (!confirm('⚠️ ¿Está seguro de que desea limpiar TODO el sistema? Esta acción no se puede deshacer.')) {
+      return {
+        exitoso: false,
+        mensaje: 'Operación cancelada',
+      };
     }
 
-    return equipos;
+    const payload = {
+      action: 'limpiar_sistema',
+      params: {},
+    };
+
+    const response = await fetch(SCRIPT_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      return {
+        exitoso: true,
+        mensaje: '✅ Sistema limpiado correctamente',
+      };
+    } else {
+      throw new Error(data.error || 'Error limpiando sistema');
+    }
+  } catch (error) {
+    console.error('Error limpiando sistema:', error);
+    return {
+      exitoso: false,
+      mensaje: error instanceof Error ? error.message : 'Error desconocido',
+    };
   }
-};
+}
+
+/**
+ * Registra una baja de un jugador
+ */
+export async function registrarBaja(nombre: string, motivo: string): Promise<{
+  exitoso: boolean;
+  mensaje: string;
+}> {
+  try {
+    const payload = {
+      action: 'registrar_baja',
+      params: {
+        nombre,
+        motivo,
+      },
+    };
+
+    const response = await fetch(SCRIPT_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      return {
+        exitoso: true,
+        mensaje: `✅ ${nombre} registrado como baja`,
+      };
+    } else {
+      throw new Error(data.error || 'Error registrando baja');
+    }
+  } catch (error) {
+    console.error('Error registrando baja:', error);
+    return {
+      exitoso: false,
+      mensaje: error instanceof Error ? error.message : 'Error desconocido',
+    };
+  }
+}
